@@ -1,11 +1,17 @@
 /*
   HomeThermostat_v010.ino
 
-  "Thermostat" example code.
+  "Thermostat" example code
+  Temperature measurement and simple on / off regulation with hysteresis.
 
   Matériels :
   - 1x carte Arduino Nano
   - 1x écran OLED 128x64 (contrôleur "SSD1306" en I2C)
+  - 1x capteur DHT11 (DHT sensor library by Adafruit) and Adafruit_Sensor.h
+    - DHT sensor library by Adafruit
+      https://github.com/adafruit/DHT-sensor-library
+    - Adafruit Unified Sensor by Adafruit
+      https://github.com/adafruit/Adafruit_Sensor
   - 1x carte relais (1 contact normalement ouvert "NO")
 
   With universal 8bit Graphics Library, https://github.com/olikraus/u8glib/
@@ -49,18 +55,14 @@
 #define DHT_TYPE DHT11   // DHT 11
 DHT dht(DHT_PIN, DHT_TYPE);
 
-int consigneOld = 20;
-int consigneNew = 20;
-
-//#define RelaisThermostatPin 12
 #define RELAIS_PIN 12
 #define RELAIS_OFF() {digitalWrite(RELAIS_PIN, HIGH);}
-#define RELAIS_ON() {digitalWrite(RELAIS_PIN, LOW);}
-// Sélectionner des sorties PWM pour la LED status RGB :
-//#define LED_STATUS_RED_PIN   11 // LedStatusRedPin sortie PWM
-//#define LED_STATUS_GREEN_PIN 12 // LedStatusGreenPin sortie PWM
-//#define LED_STATUS_BLUE_PIN  13 // LedStatusBluePin sortie PWM
-#define LED_STATUS_RED_PIN   13 // LedStatusRedPin sortie PWM
+#define RELAIS_ON()  {digitalWrite(RELAIS_PIN, LOW);}
+// LED status
+#define LED_STATUS_RED_PIN   13 // LedStatusRedPin
+
+int consigneOld = 20;
+int consigneNew = 20;
 
 // setup u8g object, please remove comment from one of the following constructor calls
 // IMPORTANT NOTE: The following list is incomplete. The complete list of supported
@@ -70,27 +72,15 @@ U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_DEV_0 | U8G_I2C_OPT_NO_ACK | U8G_I2C_OPT_F
 //U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NO_ACK);	// Display which does not send AC
 //U8GLIB_SSD1306_128X32 u8g(U8G_I2C_OPT_NONE);	// I2C / TWI
 
-void draw(void) {
-  // graphic commands to redraw the complete screen should be placed here
-  //u8g.setFont(u8g_font_unifont);
-  u8g.setFont(u8g_font_osb21);
-  //  u8g.drawStr( 0, 22, "Hello World!");
-}
-
 void setup(void) {
   // initialize serial communication at 9600 bits per second:
   Serial.begin(9600);
 
   // initialize digital pin LED_STATUS as an output.
-  //  pinMode(LED_STATUS_RED_PIN, OUTPUT);
-  //  pinMode(LED_STATUS_GREEN_PIN, OUTPUT);
   pinMode(LED_STATUS_RED_PIN, OUTPUT);
 
   pinMode(RELAIS_PIN, OUTPUT);
   RELAIS_OFF();
-
-  // flip screen, if required
-  // u8g.setRot180();
 
   // assign default color value
   if ( u8g.getMode() == U8G_MODE_R3G3B2 ) {
@@ -114,8 +104,7 @@ void setup(void) {
     u8g.setFont(u8g_font_osb18);
     u8g.drawStr( 0, 56, "Thermostat");
   } while ( u8g.nextPage() );
-  //    u8g.drawStr( 0, 16, "Consigne");
-  //    u8g.drawStr( 0, 37, "Temperature");
+
   delay(5000);
 
   dht.begin();
@@ -154,22 +143,21 @@ void setup(void) {
   Serial.println(" *F");
 }
 
-// Generally, you should use "unsigned long" for variables that hold time
-// The value will quickly become too large for an int to store
-unsigned long previousMillis = 0;        // will store last time LED was updated
+unsigned long previousMillis = 0;
 
-// constants won't change :
-const long interval = 3000;           // interval at which to blink (milliseconds)
+const long interval = 3000; // interval at which to read and display Temperature (milliseconds)
+const int hysteresis = 1;
 
 void loop(void) {
   // Lecture de la consigne
   // read the input on analog pin 0:
   int consigneValue = analogRead(A0);
-  consigneNew = map(consigneValue, 0, 1023, 15, 30);
-  
+  consigneNew = map(consigneValue, 0, 1023, 15, 25);
+
   while (consigneNew != consigneOld) {
     consigneOld = consigneNew;
     // Affichage sur l'ecran principale
+    // TODO: drawConsigne();
     char charBuf[10];               //temporarily holds data from vals
     dtostrf(consigneNew, 2, 1, charBuf);
     // picture loop
@@ -182,11 +170,11 @@ void loop(void) {
     } while ( u8g.nextPage() );
     delay(1000);
     consigneValue = analogRead(A0);
-    consigneNew = map(consigneValue, 0, 1023, 15, 30);
+    consigneNew = map(consigneValue, 0, 1023, 15, 25);
   }
 
   // print out the value you read:
-//  Serial.println(consigneNew);
+  // Serial.println(consigneNew);
 
   digitalWrite(LED_STATUS_RED_PIN, HIGH);   // turn the LED on (HIGH is the voltage level)
   delay(100);
@@ -202,43 +190,50 @@ void loop(void) {
   float mesureTemp = dht.computeHeatIndex(t, h, false);
 
   // Vérification de la demande de chauffage
-  //
-  if (mesureTemp < consigneNew) {
+  // hysteresis
+  if (mesureTemp < (consigneNew - hysteresis)) {
     //digitalWrite(LED_STATUS_RED_PIN, HIGH);
     //digitalWrite(RELAIS_PIN, LOW);
     RELAIS_ON();
-  } else {
+  }
+  //  if (mesureTemp > (consigneNew + hysteresis)) {
+  if (mesureTemp > consigneNew) {
     //digitalWrite(LED_STATUS_RED_PIN, LOW);
     //digitalWrite(RELAIS_PIN, HIGH);
     RELAIS_OFF();
   }
 
-  // check to see if it's time to blink the LED; that is, if the
-  // difference between the current time and last time you blinked
-  // the LED is bigger than the interval at which you want to
-  // blink the LED.
   unsigned long currentMillis = millis();
 
   if (currentMillis - previousMillis >= interval) {
-    // save the last time you blinked the LED
     previousMillis = currentMillis;
 
     // Affichage de la température sur l'ecran principale
-    char charBuf[10];               //temporarily holds data from vals
-    dtostrf(mesureTemp, 2, 1, charBuf);
+    // TODO: drawTemperature();
     // picture loop
     u8g.firstPage();
     do {
-      //    u8g.setFont(u8g_font_unifont);
-      //    u8g.drawStr( 0, 10, "Temperature");
+      char charBuf[10];               // temporarily holds data from vals
+      dtostrf(consigneNew, 2, 1, charBuf);
+
+      u8g.setFont(u8g_font_osb18);
+      u8g.drawStr( 0, 18, "Tc:");
+      u8g.drawStr( 48, 18, charBuf);
+      u8g.drawStr( 108, 18, "C");
+
+      dtostrf(mesureTemp, 2, 1, charBuf);
       u8g.setFont(u8g_font_osb21);
-      u8g.drawStr( 23, 45, charBuf);
-      u8g.drawStr( 87, 45, "C");
+      u8g.drawStr( 23, 60, charBuf);
+      u8g.drawStr( 87, 60, "C");
     } while ( u8g.nextPage() );
   }
+}
 
-  // rebuild the picture after some delay
-  //  delay(3000);
-  //  delay(1);        // delay in between reads for stability
+void drawConsigne(void) {
+  // graphic commands to redraw the complete screen should be placed here
+}
+
+void drawTemperature(void) {
+  // graphic commands to redraw the complete screen should be placed here
 }
 
